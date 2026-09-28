@@ -1,0 +1,76 @@
+# Les secrets ne sont PLUS dans ce fichier : créez un fichier .env (non versionné) à côté,
+# voir .env.example. Docker Compose refuse de démarrer si une variable obligatoire manque.
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: medishahel_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-medisahel_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      POSTGRES_DB: ${POSTGRES_DB:-medisahel_db}
+    volumes:
+      - medishahel_pgdata:/var/lib/postgresql/data
+    # Pas de "ports:" -> la base n'est joignable que depuis le réseau Docker interne.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-medisahel_user} -d ${POSTGRES_DB:-medisahel_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - medishahel_net
+
+  medishahel-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medishahel_app
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-medisahel_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-medisahel_db}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Définir JWT_SECRET (64+ caractères aléatoires) dans .env}
+      APP_URL: ${APP_URL:?Définir APP_URL dans .env}
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # "expose" et non "ports" : seul Nginx est publié sur l'extérieur.
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    volumes:
+      - medishahel_filedata:/app/data
+    networks:
+      - medishahel_net
+
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: medishahel_proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - medishahel-app
+    networks:
+      - medishahel_net
+
+volumes:
+  medishahel_pgdata:
+    driver: local
+  medishahel_filedata:
+    driver: local
+
+networks:
+  medishahel_net:
+    driver: bridge
